@@ -1,18 +1,35 @@
 # silence_cut — 무음 자동컷
 
 롱폼 유튜브 영상(화면 녹화 + 마이크)에서 말 사이의 무음 구간을 찾아 자동으로 잘라내고
-`원본이름_cut.mp4` 로 저장하는 파이썬 CLI 입니다. 원본 파일은 수정하지 않습니다.
+`원본이름_cut.mp4` 로 저장합니다. 원본 파일은 수정하지 않습니다.
+**창(GUI)에서 버튼으로 쓰는 방법**과 **명령어(CLI)로 쓰는 방법** 둘 다 지원합니다.
 
-## 준비
+## 준비 (처음 한 번)
 
-1. **Python 3.8 이상** — 추가 pip 패키지는 필요 없습니다 (`requirements.txt` 참고).
-2. **ffmpeg / ffprobe** (5.1 이상 권장)
-   - `winget install Gyan.FFmpeg` 또는 `choco install ffmpeg`
+1. **Python 3.8 이상** — <https://www.python.org/downloads/>
+   - 설치 화면에서 **"Add python.exe to PATH"** 체크, "tcl/tk and IDLE" 은 기본값(체크) 그대로 두기
+2. **ffmpeg** — 명령 프롬프트에서 `winget install Gyan.FFmpeg` (또는 `choco install ffmpeg`)
    - 또는 <https://www.gyan.dev/ffmpeg/builds/> 에서 받아 `bin` 폴더를 PATH 에 추가
-   - 새 터미널에서 `ffmpeg -version` 으로 확인
-   - PATH 에 넣기 싫다면 `--ffmpeg "C:\ffmpeg\bin\ffmpeg.exe"` 로 직접 지정
+   - 새 터미널에서 `ffmpeg -version` 이 나오면 OK
+3. (선택) 드래그&드롭을 쓰려면: `pip install tkinterdnd2`
 
-## 사용법
+## 창(GUI)으로 쓰기 — 추천
+
+**`run_gui.bat` 을 더블클릭**하면 창이 뜹니다. (`silence_cut_gui.pyw` 를 직접 더블클릭해도 됩니다)
+
+1. **[파일 추가]** / **[폴더 추가]** 로 영상을 넣습니다 (tkinterdnd2 설치 시 끌어다 놓기도 가능).
+2. **컷 강도**를 고릅니다.
+   - 자연스럽게: 0.8초 이상 쉼만 자르고 앞뒤 0.2초 여유
+   - 기본: 0.5초 이상 쉼을 자르고 앞뒤 0.12초 여유
+   - 빡빡하게: 0.35초 이상 쉼을 자르고 앞뒤 0.08초 여유
+   - 세부 값(무음 기준 dB, 여유 등)을 직접 바꾸면 "직접 설정"으로 바뀝니다.
+3. **[미리 분석]** 으로 얼마나 잘릴지 먼저 확인하거나, 바로 **[▶ 컷 시작]** 을 누릅니다.
+4. 진행률과 로그가 창 아래에 표시되고, 끝나면 결과 폴더가 열립니다.
+   **[■ 중지]** 를 누르면 즉시 멈추고 미완성 파일은 자동으로 정리됩니다.
+
+설정 값은 자동 저장되어 다음 실행 때 그대로 유지됩니다 (`%USERPROFILE%\.silence_cut_gui.json`).
+
+## 명령어(CLI)로 쓰기
 
 ```bat
 :: 파일 하나 (출력: 영상_cut.mp4)
@@ -24,11 +41,12 @@ python silence_cut.py --input "영상.mp4" --output "영상_cut.mp4" --db -30 --
 :: 폴더 안의 모든 mp4 일괄 처리 (이미 _cut 으로 끝나는 파일은 제외)
 python silence_cut.py --input "D:\녹화 폴더"
 
-:: 렌더링 없이 어디가 잘릴지만 미리 확인 (EDL json 저장)
+:: 렌더링 없이 어디가 잘릴지만 미리 확인
 python silence_cut.py --input "영상.mp4" --dry-run
 ```
 
 한글·공백이 들어간 경로도 그대로 쓰면 됩니다 (따옴표로 감싸기).
+ffmpeg 를 PATH 에 넣지 않았다면 `--ffmpeg "C:\ffmpeg\bin\ffmpeg.exe"` 로 직접 지정할 수 있습니다.
 
 ## 옵션
 
@@ -46,7 +64,7 @@ python silence_cut.py --input "영상.mp4" --dry-run
 | `--crf` | (없음) | 지정하면 원본 비트레이트 대신 화질 고정 모드 (18 ≈ 육안 무손실) |
 | `--preset` | 인코더별 | libx264 `medium`, nvenc `p5` 등. 빠르게: `fast` / `p3` |
 | `--fps` | 자동 | 출력 프레임레이트 강제 (예: `60`, `30000/1001`) |
-| `--dry-run` | | 렌더링 없이 결과 요약과 `_cut.edl.json` 만 생성 |
+| `--dry-run` | | 렌더링 없이 결과 요약과 잘릴 구간만 출력 |
 | `--save-edl` | | 렌더링하면서 편집 리스트도 json 으로 저장 |
 | `--overwrite` | | 이미 있는 출력 파일 덮어쓰기 (기본은 건너뜀) |
 | `--chunk-size` | `80` | 한 번에 렌더링할 구간 수 (보통 건드릴 필요 없음) |

@@ -1,6 +1,9 @@
-# silence_cut.py 는 파이썬 표준 라이브러리만 사용합니다 (Python 3.8 이상).
-# 추가로 pip 설치할 패키지는 없습니다.
-#
-# 필수 외부 프로그램:
-#   - ffmpeg / ffprobe 5.1 이상 권장 (PATH 에 등록하거나 --ffmpeg 옵션으로 경로 지정)
+# silence_cut.py / silence_cut_gui.pyw 는 파이썬 표준 라이브러리만으로 동작합니다 (Python 3.8 이상).
+# 아래 패키지는 선택 사항입니다.
+
+# 선택: GUI 창에 파일/폴더를 끌어다 놓기(드래그&드롭) 지원
+tkinterdnd2
+
+# 필수 외부 프로그램 (pip 로 설치되지 않음):
+#   - ffmpeg / ffprobe 5.1 이상 권장 (PATH 에 등록)
 #     Windows: winget install Gyan.FFmpeg

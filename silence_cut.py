@@ -39,7 +39,7 @@ STANDARD_FPS = [
 ]
 
 FFMPEG_INSTALL_GUIDE = """\
-[오류] ffmpeg / ffprobe 를 찾을 수 없습니다.
+ffmpeg / ffprobe 를 찾을 수 없습니다.
 
   Windows 설치 방법 (택 1):
     - winget install Gyan.FFmpeg
@@ -53,6 +53,38 @@ FFMPEG_INSTALL_GUIDE = """\
 
 class SilenceCutError(Exception):
     pass
+
+
+class Cancelled(SilenceCutError):
+    pass
+
+
+# Windows 에서 ffmpeg 실행 시 콘솔 창이 깜빡이지 않도록 (GUI 에서 실행할 때 필요)
+POPEN_KW: dict = {"creationflags": subprocess.CREATE_NO_WINDOW} if os.name == "nt" else {}
+
+# GUI 연동: 진행률 콜백 hook(label, percent, speed) 과 중지 요청
+progress_hook = None
+_cancel_requested = False
+_current_proc: Optional[subprocess.Popen] = None
+
+
+def request_cancel() -> None:
+    """실행 중인 작업을 중지한다 (다른 스레드에서 호출 가능)."""
+    global _cancel_requested
+    _cancel_requested = True
+    proc = _current_proc
+    if proc is not None and proc.poll() is None:
+        proc.kill()
+
+
+def reset_cancel() -> None:
+    global _cancel_requested
+    _cancel_requested = False
+
+
+def check_cancel() -> None:
+    if _cancel_requested:
+        raise Cancelled("사용자가 중지했습니다.")
 
 
 # ---------------------------------------------------------------------------
@@ -117,14 +149,12 @@ def find_tools(ffmpeg_arg: Optional[str]) -> Tools:
         ffmpeg = shutil.which("ffmpeg")
         ffprobe = shutil.which("ffprobe")
     if not ffmpeg or not ffprobe:
-        print(FFMPEG_INSTALL_GUIDE, file=sys.stderr)
-        sys.exit(2)
+        raise SilenceCutError(FFMPEG_INSTALL_GUIDE)
     try:
-        out = subprocess.run([ffmpeg, "-hide_banner", "-version"], capture_output=True,
-                             text=True, encoding="utf-8", errors="replace", check=True).stdout
+        out = subprocess.run([ffmpeg, "-hide_banner", "-version"], capture_output=True, text=True,
+                             encoding="utf-8", errors="replace", check=True, **POPEN_KW).stdout
     except (OSError, subprocess.CalledProcessError):
-        print(FFMPEG_INSTALL_GUIDE, file=sys.stderr)
-        sys.exit(2)
+        raise SilenceCutError(FFMPEG_INSTALL_GUIDE)
     first = out.splitlines()[0] if out else ""
     m = re.search(r"ffmpeg version n?(\d+)\.(\d+)", first)
     version = (int(m.group(1)), int(m.group(2))) if m else None
@@ -139,15 +169,19 @@ def run_ffmpeg(cmd: Sequence[str], log_path: Path, total: float, label: str) -> 
 
     stderr 는 파이프 교착을 피하려고 로그 파일로 보낸다.
     """
+    global _current_proc
+    check_cancel()
     cmd = list(cmd)
     # -progress 는 출력 옵션이 아니라 전역 옵션이므로 앞쪽에 삽입
     cmd[1:1] = ["-nostdin", "-nostats", "-progress", "pipe:1"]
+    hook = progress_hook
     last_print = 0.0
     out_time = 0.0
     speed = ""
     with open(log_path, "w", encoding="utf-8", errors="replace") as log:
         proc = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=log,
-                                text=True, encoding="utf-8", errors="replace")
+                                text=True, encoding="utf-8", errors="replace", **POPEN_KW)
+        _current_proc = proc
         try:
             assert proc.stdout is not None
             for line in proc.stdout:
@@ -163,16 +197,24 @@ def run_ffmpeg(cmd: Sequence[str], log_path: Path, total: float, label: str) -> 
                     if val == "end" or now - last_print > 0.5:
                         last_print = now
                         pct = min(100.0, out_time / total * 100) if total > 0 else 0.0
-                        sp = f"  {speed}" if speed and speed != "N/A" else ""
-                        sys.stdout.write(f"\r  {label}: {pct:5.1f}%  ({tc(out_time)} / {tc(total)}){sp}   ")
-                        sys.stdout.flush()
+                        sp = speed if speed and speed != "N/A" else ""
+                        if hook:
+                            hook(label, pct, sp)
+                        else:
+                            sys.stdout.write(f"\r  {label}: {pct:5.1f}%  ({tc(out_time)} / {tc(total)})  {sp}   ")
+                            sys.stdout.flush()
             proc.wait()
         except BaseException:
             proc.kill()
             proc.wait()
-            sys.stdout.write("\n")
+            if not hook:
+                sys.stdout.write("\n")
             raise
-    sys.stdout.write("\n")
+        finally:
+            _current_proc = None
+    if not hook:
+        sys.stdout.write("\n")
+    check_cancel()
     if proc.returncode != 0:
         tail = log_path.read_text(encoding="utf-8", errors="replace").strip().splitlines()[-15:]
         raise SilenceCutError(f"ffmpeg 실행 실패 ({label}, 코드 {proc.returncode}):\n    "
@@ -217,7 +259,7 @@ def pick_fps(avg: Optional[Fraction], rfr: Optional[Fraction]) -> Tuple[Fraction
 def probe(tools: Tools, path: Path, track: int, fps_override: Optional[Fraction]) -> MediaInfo:
     res = subprocess.run(
         [tools.ffprobe, "-v", "error", "-print_format", "json", "-show_format", "-show_streams", str(path)],
-        capture_output=True, text=True, encoding="utf-8", errors="replace")
+        capture_output=True, text=True, encoding="utf-8", errors="replace", **POPEN_KW)
     if res.returncode != 0:
         raise SilenceCutError(f"ffprobe 실패: {res.stderr.strip()}")
     data = json.loads(res.stdout or "{}")
@@ -476,7 +518,7 @@ def encoder_works(tools: Tools, args: List[str]) -> bool:
         cmd = [tools.ffmpeg, "-hide_banner", "-v", "error", "-nostdin",
                "-f", "lavfi", "-i", "testsrc2=s=640x360:r=30:d=0.5", *args, "-f", "null", "-"]
         try:
-            ok = subprocess.run(cmd, capture_output=True, timeout=60).returncode == 0
+            ok = subprocess.run(cmd, capture_output=True, timeout=60, **POPEN_KW).returncode == 0
         except (OSError, subprocess.TimeoutExpired):
             ok = False
         _encoder_cache[key] = ok
@@ -485,7 +527,7 @@ def encoder_works(tools: Tools, args: List[str]) -> bool:
 
 def available_encoders(tools: Tools) -> set:
     out = subprocess.run([tools.ffmpeg, "-hide_banner", "-encoders"], capture_output=True,
-                         text=True, encoding="utf-8", errors="replace").stdout
+                         text=True, encoding="utf-8", errors="replace", **POPEN_KW).stdout
     names = set()
     for line in out.splitlines():
         parts = line.split()
@@ -626,7 +668,7 @@ def render(tools: Tools, info: MediaInfo, plan: Plan, enc: Encoder, track: int,
 def probe_duration(tools: Tools, path: Path) -> Optional[float]:
     res = subprocess.run([tools.ffprobe, "-v", "error", "-show_entries", "format=duration",
                           "-of", "default=nw=1:nk=1", str(path)],
-                         capture_output=True, text=True, encoding="utf-8", errors="replace")
+                         capture_output=True, text=True, encoding="utf-8", errors="replace", **POPEN_KW)
     try:
         return float(res.stdout.strip())
     except ValueError:
@@ -670,7 +712,7 @@ def process_file(tools: Tools, src: Path, out: Path, args: argparse.Namespace) -
     print(f"  예상 최종 길이 : {tc(plan.final_seconds)} ({plan.final_seconds:.1f}s)"
           f"  -> 원본 대비 {ratio:.1f}% (-{100 - ratio:.1f}%)")
 
-    if args.save_edl or args.dry_run:
+    if args.save_edl:
         edl_path = out.with_name(out.stem + ".edl.json")
         save_edl(plan, info, args, edl_path)
         print(f"  EDL 저장       : {edl_path.name}")
@@ -679,8 +721,9 @@ def process_file(tools: Tools, src: Path, out: Path, args: argparse.Namespace) -
         for a, b in plan.cuts[:20]:
             print(f"         컷 {tc(plan.sec(a))} ~ {tc(plan.sec(b))} ({plan.sec(b - a):.2f}s)")
         if len(plan.cuts) > 20:
-            print(f"         ... 외 {len(plan.cuts) - 20}개 (전체 목록은 EDL 파일 참고)")
-        return None
+            print(f"         ... 외 {len(plan.cuts) - 20}개 (--save-edl 로 전체 목록 저장)")
+        return {"name": src.name, "orig": orig, "final": plan.final_seconds,
+                "cuts": len(plan.cuts), "dry_run": True}
 
     if not plan.cuts:
         print("  잘라낼 무음이 없어 출력 파일을 만들지 않습니다.")
@@ -768,8 +811,8 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
         print("[오류] --padding >= 0, --min-silence > 0, --chunk-size >= 1 이어야 합니다.", file=sys.stderr)
         return 2
 
-    tools = find_tools(args.ffmpeg)
     try:
+        tools = find_tools(args.ffmpeg)
         jobs = collect_jobs(args.input, args.output)
     except SilenceCutError as e:
         print(f"[오류] {e}", file=sys.stderr)
