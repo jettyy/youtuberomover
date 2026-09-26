@@ -3,3 +3,4 @@ __pycache__/
 *.mp4
 *.edl.json
 .silence_cut_*/
+silence_cut_error.log

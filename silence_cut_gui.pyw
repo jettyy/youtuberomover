@@ -21,7 +21,12 @@ from tkinter import filedialog, messagebox, ttk
 import tkinter.font as tkfont
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
-import silence_cut as sc  # noqa: E402
+try:
+    import silence_cut as sc  # noqa: E402
+    _IMPORT_ERROR = ""
+except Exception:
+    sc = None  # type: ignore[assignment]
+    _IMPORT_ERROR = traceback.format_exc()
 
 try:  # 선택 사항: pip install tkinterdnd2
     from tkinterdnd2 import DND_FILES, TkinterDnD  # type: ignore
@@ -141,7 +146,8 @@ class App:
         self.btn_clear = ttk.Button(bar, text="전체 비우기", command=self.clear_files)
         for b in (self.btn_add, self.btn_add_dir, self.btn_remove, self.btn_clear):
             b.pack(side="left", padx=(0, 6))
-        hint = "여기로 파일/폴더를 끌어다 놓아도 됩니다" if TkinterDnD else ""
+        dnd = self.enable_dnd(files)
+        hint = "여기로 파일/폴더를 끌어다 놓아도 됩니다" if dnd else ""
         ttk.Label(bar, text=hint, style="Hint.TLabel").pack(side="right")
 
         tree_wrap = ttk.Frame(files)
@@ -160,10 +166,8 @@ class App:
         ysb.grid(row=0, column=1, sticky="ns")
         self.tree.configure(yscrollcommand=ysb.set)
         self.tree.bind("<Delete>", lambda e: self.remove_selected())
-        if TkinterDnD:
-            for w in (self.tree, files):
-                w.drop_target_register(DND_FILES)
-                w.dnd_bind("<<Drop>>", self.on_drop)
+        if dnd:
+            self.enable_dnd(self.tree)
 
         # 2) 설정 ------------------------------------------------------------
         opts = ttk.LabelFrame(main, text=" 2. 설정 ", padding=8)
@@ -343,6 +347,17 @@ class App:
         d = filedialog.askdirectory(title="영상 폴더 선택")
         if d:
             self.add_paths([d])
+
+    def enable_dnd(self, widget) -> bool:
+        """드래그&드롭 등록. tkinterdnd2 가 없거나 동작하지 않으면 조용히 끈다."""
+        if TkinterDnD is None:
+            return False
+        try:
+            widget.drop_target_register(DND_FILES)
+            widget.dnd_bind("<<Drop>>", self.on_drop)
+            return True
+        except Exception:
+            return False
 
     def on_drop(self, event) -> None:
         self.add_paths(self.root.tk.splitlist(event.data))
@@ -598,26 +613,60 @@ class App:
 
 
 def main() -> None:
+    if sc is None:
+        raise ImportError("silence_cut.py 를 불러올 수 없습니다. zip 압축을 모두 푼 폴더에서 실행하세요.\n\n"
+                          + _IMPORT_ERROR)
     if os.name == "nt":
+        import ctypes
+        if os.environ.get("SILENCE_CUT_HIDE_CONSOLE"):
+            try:  # run_gui.bat 이 python.exe 로 띄운 경우 콘솔 창 숨기기
+                hwnd = ctypes.windll.kernel32.GetConsoleWindow()
+                if hwnd:
+                    ctypes.windll.user32.ShowWindow(hwnd, 0)
+            except Exception:
+                pass
         try:  # 고해상도 모니터에서 글자가 흐릿하지 않게
-            import ctypes
             ctypes.windll.shcore.SetProcessDpiAwareness(1)
         except Exception:
             pass
-    root = TkinterDnD.Tk() if TkinterDnD else tk.Tk()
+    root = None
+    if TkinterDnD is not None:
+        try:
+            root = TkinterDnD.Tk()
+        except Exception:
+            root = None
+    if root is None:
+        root = tk.Tk()
     if os.name == "nt":
         for name in ("TkDefaultFont", "TkTextFont", "TkMenuFont", "TkHeadingFont"):
             try:
                 tkfont.nametofont(name).configure(family="맑은 고딕", size=10)
             except tk.TclError:
                 pass
-    try:
-        App(root)
-    except Exception:
-        messagebox.showerror(APP_TITLE, traceback.format_exc())
-        raise
+    App(root)
     root.mainloop()
 
 
+def report_crash() -> None:
+    """시작 중 오류를 파일과 메시지 창으로 알린다 (콘솔이 숨겨져 있어도 보이도록)."""
+    text = traceback.format_exc()
+    log = Path(__file__).resolve().parent / "silence_cut_error.log"
+    try:
+        log.write_text(text, encoding="utf-8")
+    except Exception:
+        pass
+    try:
+        r = tk.Tk()
+        r.withdraw()
+        messagebox.showerror(APP_TITLE, f"프로그램 시작 중 오류가 발생했습니다.\n({log.name} 에 저장됨)\n\n{text[-1500:]}")
+        r.destroy()
+    except Exception:
+        pass
+
+
 if __name__ == "__main__":
-    main()
+    try:
+        main()
+    except Exception:
+        report_crash()
+        raise
