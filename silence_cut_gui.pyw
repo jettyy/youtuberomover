@@ -42,13 +42,18 @@ PRESETS = {
     "빡빡하게": {"min_silence": 0.35, "padding": 0.08},
 }
 CUSTOM = "직접 설정"
+QUALITIES = {
+    "고화질 (권장 · 원본과 구분 안 됨)": "high",
+    "최고화질 (글자 많은 화면 · 용량 큼)": "max",
+    "원본 용량 맞춤 (움직이는 장면 화질 저하)": "match",
+}
 ENCODERS = {
     "자동 (GPU 있으면 GPU 사용, 빠름)": "auto",
     "CPU (느리지만 어디서나 동작)": "cpu",
 }
 DEFAULTS = {
     "preset": "기본", "db": -30.0, "min_silence": 0.5, "padding": 0.12, "max_silence": 10.0,
-    "encoder": "auto", "out_mode": "same", "out_dir": "", "overwrite": False, "open_after": True,
+    "encoder": "auto", "quality": "high", "out_mode": "same", "out_dir": "", "overwrite": False, "open_after": True,
 }
 
 
@@ -108,6 +113,8 @@ class App:
         self.max_var = tk.StringVar(value=f"{s['max_silence']:g}")
         enc_label = next((k for k, v in ENCODERS.items() if v == s["encoder"]), next(iter(ENCODERS)))
         self.enc_var = tk.StringVar(value=enc_label)
+        q_label = next((k for k, v in QUALITIES.items() if v == s["quality"]), next(iter(QUALITIES)))
+        self.quality_var = tk.StringVar(value=q_label)
         self.out_mode = tk.StringVar(value=s["out_mode"])
         self.out_dir = tk.StringVar(value=s["out_dir"])
         self.overwrite_var = tk.BooleanVar(value=s["overwrite"])
@@ -197,6 +204,11 @@ class App:
             ttk.Label(opts, text=desc, style="Hint.TLabel").grid(row=r, column=2, sticky="w")
 
         r += 1
+        ttk.Label(opts, text="화질").grid(row=r, column=0, sticky="w", pady=3)
+        ttk.Combobox(opts, textvariable=self.quality_var, state="readonly", width=32,
+                     values=list(QUALITIES)).grid(row=r, column=1, columnspan=2, sticky="w", padx=8)
+
+        r += 1
         ttk.Label(opts, text="인코딩").grid(row=r, column=0, sticky="w", pady=3)
         ttk.Combobox(opts, textvariable=self.enc_var, state="readonly", width=32,
                      values=list(ENCODERS)).grid(row=r, column=1, columnspan=2, sticky="w", padx=8)
@@ -276,6 +288,7 @@ class App:
         try:
             p = self.read_params(silent=True) or {}
             data = {"preset": self.preset_var.get(), "encoder": ENCODERS.get(self.enc_var.get(), "auto"),
+                    "quality": QUALITIES.get(self.quality_var.get(), "high"),
                     "out_mode": self.out_mode.get(), "out_dir": self.out_dir.get(),
                     "overwrite": self.overwrite_var.get(), "open_after": self.open_after_var.get(), **p}
             SETTINGS_PATH.write_text(json.dumps(data, ensure_ascii=False, indent=2), encoding="utf-8")
@@ -415,7 +428,8 @@ class App:
         self.pb_file["value"] = 0
         self.pb_total["value"] = 0
         encoder = ENCODERS.get(self.enc_var.get(), "auto")
-        opts = dict(params, encoder=encoder, overwrite=self.overwrite_var.get(), dry=dry)
+        quality = QUALITIES.get(self.quality_var.get(), "high")
+        opts = dict(params, encoder=encoder, quality=quality, overwrite=self.overwrite_var.get(), dry=dry)
         self.worker = threading.Thread(target=self.run_jobs, args=(list(self.jobs), opts), daemon=True)
         self.set_running(True)
         self.status_var.set("준비 중...")
@@ -445,7 +459,8 @@ class App:
                 q.put(("file_start", i, src))
                 argv = ["--input", str(src), "--output", str(out), "--db", str(o["db"]),
                         "--min-silence", str(o["min_silence"]), "--padding", str(o["padding"]),
-                        "--max-silence", str(o["max_silence"]), "--encoder", o["encoder"]]
+                        "--max-silence", str(o["max_silence"]), "--encoder", o["encoder"],
+                        "--quality", o["quality"]]
                 if o["overwrite"]:
                     argv.append("--overwrite")
                 if o["dry"]:

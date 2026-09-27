@@ -444,10 +444,21 @@ class Encoder:
 
 
 HW_SUFFIXES = ("_nvenc", "_qsv", "_amf")
+
+# 화질 등급별 품질 값 (낮을수록 고화질). 인코더마다 스케일이 조금씩 달라 따로 둔다.
+#   high: 육안으로 원본과 구분 안 되는 수준 (기본값)
+#   max : 글자/UI 가 아주 많은 화면용, 용량 더 큼
+#   match: 원본 평균 비트레이트에 맞춤 (용량은 비슷하지만 스크롤 등 움직이는 장면에서 화질 저하)
+QUALITY_LEVELS = {
+    "high": {"x": 18, "nvenc": 19, "qsv": 20, "amf": 18},
+    "max": {"x": 14, "nvenc": 15, "qsv": 16, "amf": 14},
+}
+QUALITY_NAMES = {"high": "고화질", "max": "최고화질", "match": "원본 용량 맞춤"}
 SW_PIX_FMTS = {"yuv420p", "yuv422p", "yuv444p", "yuv420p10le", "yuv422p10le", "yuv444p10le"}
 
 
-def encoder_args(name: str, info: MediaInfo, crf: Optional[int], preset: Optional[str]) -> List[str]:
+def encoder_args(name: str, info: MediaInfo, crf: Optional[int], preset: Optional[str],
+                 quality: str = "high") -> List[str]:
     hw = name.endswith(HW_SUFFIXES)
     ten_bit = "10" in info.pix_fmt
     hevc = "265" in name or "hevc" in name
@@ -477,17 +488,24 @@ def encoder_args(name: str, info: MediaInfo, crf: Optional[int], preset: Optiona
         if name == "libx265":
             args += ["-x265-params", "log-level=error"]
 
-    # 화질/비트레이트
-    if crf is not None or not info.vbitrate:
-        q = str(crf if crf is not None else 18)
+    # 화질: 기본은 '화질 고정' 방식. 화면 녹화는 정지 화면에선 비트레이트가 거의 0 이다가
+    # 스크롤 때 크게 튀므로, 평균 비트레이트에 맞추면 움직이는 장면이 뭉개진다.
+    if crf is not None:
+        levels: Optional[Dict[str, int]] = {"x": crf, "nvenc": crf, "qsv": crf, "amf": crf}
+    elif quality == "match" and info.vbitrate:
+        levels = None
+    else:
+        levels = QUALITY_LEVELS.get(quality, QUALITY_LEVELS["high"])
+    if levels is not None:
         if name.endswith("_nvenc"):
-            args += ["-rc", "vbr", "-cq", q, "-b:v", "0"]
+            args += ["-rc", "vbr", "-cq", str(levels["nvenc"]), "-b:v", "0"]
         elif name.endswith("_qsv"):
-            args += ["-global_quality", q]
+            args += ["-global_quality", str(levels["qsv"])]
         elif name.endswith("_amf"):
+            q = str(levels["amf"])
             args += ["-rc", "cqp", "-qp_i", q, "-qp_p", q]
         else:
-            args += ["-crf", q]
+            args += ["-crf", str(levels["x"])]
     else:
         b = info.vbitrate
         rate = ["-b:v", str(b), "-maxrate", str(b * 2), "-bufsize", str(b * 2)]
@@ -537,7 +555,7 @@ def available_encoders(tools: Tools) -> set:
 
 
 def choose_encoder(tools: Tools, info: MediaInfo, choice: str, crf: Optional[int],
-                   preset: Optional[str]) -> Encoder:
+                   preset: Optional[str], quality: str = "high") -> Encoder:
     family = "hevc" if info.vcodec in ("hevc", "h265") else "h264"
     sw = "libx265" if family == "hevc" else "libx264"
     if choice == "auto":
@@ -550,7 +568,7 @@ def choose_encoder(tools: Tools, info: MediaInfo, choice: str, crf: Optional[int
     for name in dict.fromkeys(candidates):
         if name not in have:
             continue
-        args = encoder_args(name, info, crf, preset)
+        args = encoder_args(name, info, crf, preset, quality)
         if encoder_works(tools, args):
             if choice not in ("auto", "cpu") and name != choice:
                 print(f"  [경고] 인코더 '{choice}' 를 사용할 수 없어 {name} 로 대신 처리합니다.")
@@ -732,8 +750,14 @@ def process_file(tools: Tools, src: Path, out: Path, args: argparse.Namespace) -
         print("  [경고] 전체가 무음으로 판정되었습니다. --db 값을 낮춰 보세요 (예: -40). 건너뜁니다.")
         return None
 
-    enc = choose_encoder(tools, info, args.encoder, args.crf, args.preset)
-    print(f"  인코더         : {enc.name}")
+    enc = choose_encoder(tools, info, args.encoder, args.crf, args.preset, args.quality)
+    if args.crf is not None:
+        qdesc = f"화질 고정 {args.crf}"
+    elif args.quality == "match" and info.vbitrate:
+        qdesc = f"원본 용량 맞춤 {info.vbitrate / 1000:.0f} kbps"
+    else:
+        qdesc = QUALITY_NAMES.get(args.quality, "고화질")
+    print(f"  인코더         : {enc.name} ({qdesc})")
     render(tools, info, plan, enc, args.audio_track, args.chunk_size, out)
 
     final = probe_duration(tools, out) or plan.final_seconds
@@ -789,7 +813,10 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--audio-track", type=int, default=0, help="탐지/출력에 사용할 오디오 트랙 번호 (0부터)")
     p.add_argument("--encoder", default="auto",
                    help="auto(GPU 자동 탐지 후 CPU), cpu, 또는 ffmpeg 인코더 이름 (h264_nvenc, libx264 등)")
-    p.add_argument("--crf", type=int, help="지정 시 원본 비트레이트 대신 화질 고정 모드 (낮을수록 고화질, 18 권장)")
+    p.add_argument("--quality", choices=["high", "max", "match"], default="high",
+                   help="high=고화질(원본과 구분 안 됨), max=최고화질(용량 큼), "
+                        "match=원본 평균 비트레이트에 맞춤(용량 비슷, 움직이는 장면 화질 저하)")
+    p.add_argument("--crf", type=int, help="화질 값을 직접 지정 (낮을수록 고화질, --quality 보다 우선)")
     p.add_argument("--preset", help="인코더 프리셋 (기본: libx264=medium, nvenc=p5)")
     p.add_argument("--fps", type=positive_fraction, help="출력 프레임레이트 강제 지정 (예: 60, 30000/1001)")
     p.add_argument("--chunk-size", type=int, default=80, help="한 번에 렌더링할 구간 수")
